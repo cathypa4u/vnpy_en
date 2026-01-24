@@ -20,10 +20,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from vnpy_kis.kis_gateway import (
-    KisKrStockGateway, KisOvrsStockGateway, KisKrStockDemoGateway,
-     KisIsaGateway, KisKrFutOptGateway, KisOvrsFutOptGateway, KisBaseGateway
-)
+from vnpy_kis.kis_gateway import KisUnifiedGateway
+
 # from .kis_api import kis_auth
 # from .kis_datafeed import KisDatafeed as Datafeed
 # from . import api, utils

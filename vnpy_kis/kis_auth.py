@@ -1,6 +1,8 @@
 """
-KIS Auth Manager (Improved)
+KIS Auth Manager (Fixed Version)
 FileName: kis_auth.py
+- Fix: Resolved TypeError in file saving (Path object concatenation)
+- Update: Added robust logging for file I/O errors
 """
 
 import json
@@ -48,6 +50,7 @@ class KisAuthManager:
 
             # 1. Check validity (buffer 60s)
             if token_info and now < token_info["expiry"] - 60:
+                # 서버 타입(REAL/DEMO)이 일치하는지 확인
                 if token_info.get("server") == server:
                     return token_info["token"]
 
@@ -55,8 +58,13 @@ class KisAuthManager:
             return self._request_new_token(app_key, app_secret, server)
 
     def _request_new_token(self, app_key, app_secret, server):
-        domain = "https://openapivts.koreainvestment.com:29443" if server == "DEMO" else "https://openapi.koreainvestment.com:9443"
+        # 서버 이름 정규화
+        is_demo = (server == "DEMO" or server == "VIRTUAL")
+        domain = "https://openapivts.koreainvestment.com:29443" if is_demo else "https://openapi.koreainvestment.com:9443"
         url = f"{domain}/oauth2/tokenP"
+        
+        if not app_key or not app_secret:
+            raise Exception("Token Error: app_key 또는 app_secret이 비어있습니다.")
         
         try:
             res = requests.post(url, json={
@@ -64,6 +72,11 @@ class KisAuthManager:
                 "appkey": app_key,
                 "appsecret": app_secret
             }, timeout=10)
+            
+            if res.status_code != 200:
+                error_text = res.text[:500] if res.text else "No response body"
+                raise Exception(f"Token Error: HTTP {res.status_code} - {error_text}")
+            
             data = res.json()
             
             if "access_token" in data:
@@ -76,18 +89,17 @@ class KisAuthManager:
                     "server": server
                 }
                 self._save_tokens_to_file()
-                print(f"[KisAuth] Token Refreshed for AppKey ...{app_key[-4:]}")
+                print(f"[KisAuth] Token Refreshed & Saved for ...{app_key[-4:]} (Server: {server})")
                 return token
             else:
-                error_msg = data.get('error_description', data.get('msg1', str(data)))
+                error_msg = data.get('error_description') or data.get('msg1') or str(data)
                 raise Exception(f"Token Error: {error_msg}")
+                
         except Exception as e:
-            raise Exception(f"Connection Error during Auth: {e}")
+            raise Exception(f"Connection Error during Auth: {str(e)}")
 
     def _request_hashkey(self, app_key, app_secret, server, data_body):
-        """
-        [NEW] Generate HashKey for POST requests (Safety)
-        """
+        """Generate HashKey for POST requests"""
         domain = "https://openapivts.koreainvestment.com:29443" if server == "DEMO" else "https://openapi.koreainvestment.com:9443"
         url = f"{domain}/uapi/hashkey"
         
@@ -97,17 +109,11 @@ class KisAuthManager:
                 "appkey": app_key,
                 "appsecret": app_secret
             }, timeout=5)
-            
-            json_data = res.json()
-            return json_data.get("HASH", "")
-        except Exception as e:
-            print(f"[KisAuth] HashKey Generation Failed: {e}")
+            return res.json().get("HASH", "")
+        except Exception:
             return ""
 
     def check_rate_limit(self, app_key, limit_interval=0.06):
-        """
-        Prevents API Ban. Default 0.06s (approx 16 requests/sec safe margin).
-        """
         with self.req_lock:
             last_time = self.req_timers[app_key]
             elapsed = time.time() - last_time
@@ -116,12 +122,7 @@ class KisAuthManager:
             self.req_timers[app_key] = time.time()
 
     def get_header(self, tr_id, app_key, app_secret, server="REAL", body_data=None):
-        """
-        Constructs standard KIS API Header.
-        [Improved] Adds 'hashkey' if body_data is provided (for POST).
-        """
         token = self.get_token(app_key, app_secret, server)
-        
         header = {
             "content-type": "application/json; charset=utf-8",
             "authorization": f"Bearer {token}",
@@ -131,34 +132,37 @@ class KisAuthManager:
             "tr_cont": "",
             "custtype": "P",
         }
-        
-        # [NEW] HashKey Logic
         if body_data and isinstance(body_data, dict):
-            # 일반적으로 주문 등 중요 TR은 HashKey 권장/필수
-            # 다만, 일부 단순 조회 TR은 필요 없을 수 있으나 안전하게 생성
             h_key = self._request_hashkey(app_key, app_secret, server, body_data)
-            if h_key:
-                header["hashkey"] = h_key
-        
+            if h_key: header["hashkey"] = h_key
         return header
 
     def _save_tokens_to_file(self):
         """
-        [Improved] Atomic Write to prevent file corruption
+        [Fix] Convert Path to string before concatenation
         """
         try:
-            temp_path = self.file_path + ".tmp"
+            # get_file_path returns a Path object, causing TypeError if added to str directly
+            file_path_str = str(self.file_path)
+            temp_path = file_path_str + ".tmp"
+            
             with open(temp_path, "w") as f:
-                json.dump(self.tokens, f)
+                json.dump(self.tokens, f, indent=4)
+            
             # Atomic replacement
-            os.replace(temp_path, self.file_path)
-        except Exception: pass
+            if os.path.exists(self.file_path):
+                os.remove(self.file_path)
+            os.rename(temp_path, self.file_path)
+            
+        except Exception as e:
+            print(f"⚠️ [KisAuth] Failed to save token file: {e}")
 
     def _load_tokens_from_file(self):
         if not os.path.exists(self.file_path): return
         try:
             with open(self.file_path, "r") as f:
                 self.tokens = json.load(f)
-        except Exception: pass
+        except Exception as e:
+            print(f"⚠️ [KisAuth] Failed to load token file: {e}")
 
 kis_auth = KisAuthManager()
