@@ -1,582 +1,619 @@
-# kis_api_helper.py
+"""
+KIS API Helper & Config (Final Refined Version)
+- FileName: kis_api_helper.py
+- Features:
+  1. Centralized TR ID Management (Registry Pattern)
+  2. Asset-Specific Logic Encapsulation (Stock, FutOpt, Bond, Overseas)
+  3. Dynamic Parameter Construction (Order, Query, History, Contract Search)
+  4. Intelligent Asset Type Inference
+
+MCP Reference (한국투자 코딩도우미 MCP):
+  - TR/URL 검증·추가 시: search_*_api 로 공식 API 검색 후 read_source_code(url_main) 로 샘플 확인
+  - AssetType ↔ MCP category:
+      KR_STOCK   → domestic_stock      (search_domestic_stock_api)
+      KR_FUTOPT  → domestic_futureoption (search_domestic_futureoption_api)
+      KR_BOND    → domestic_bond      (search_domestic_bond_api)
+      OS_STOCK   → overseas_stock     (search_overseas_stock_api)
+      OS_FUTOPT  → overseas_futureoption (search_overseas_futureoption_api)
+  - 액션 ↔ 공식 function_name 예: balance→inquire_balance, modify/cancel→order_rvsecncl, daily→inquire_daily_itemchartprice
+"""
+
+from typing import Dict, Any, Tuple, Optional, Union, List
 from datetime import datetime
-from typing import Dict, Optional, Tuple, Any, List
+from vnpy.trader.constant import Direction, Exchange, Product, OrderType, Status, Offset, Interval
+from vnpy.trader.object import OrderRequest, CancelRequest, HistoryRequest
 
-from vnpy.trader.constant import Exchange, Direction, OrderType, Interval, Product
-from vnpy.trader.object import HistoryRequest, OrderRequest, CancelRequest
-
-
-# WebSocket TR IDs (Subscription Only)
-TR_WS = {
-    # 1. Domestic Stock
-    "KR_STOCK": "H0STCNT0",       "KR_STOCK_HOKA": "H0STASP0",
-    "KR_NXT": "H0NXCNT0",         "KR_NXT_HOKA": "H0NXASP0",   # Nextrade
-    "KR_SOR": "H0UNCNT0",         "KR_SOR_HOKA": "H0UNASP0",   # SOR
-    
-    # 2. Derivatives & Bond
-    "KR_FUT": "H0IFCNT0", "KR_FUT_HOKA": "H0IFASP0",
-    "KR_OPT": "H0IOCNT0", "KR_OPT_HOKA": "H0IOASP0",
-    "KR_BOND": "H0BJCNT0", "KR_BOND_HOKA": "H0BJASP0", # 채권 호가는 예시
-    "KR_INDEX": "H0UPCNT0",
-
-    # 3. Overseas
-    "OS_STOCK": "HDFSCNT0", "OS_STOCK_HOKA": "HDFSASP0",
-    "OS_FUT": "HDFFF020",   "OS_FUT_HOKA": "HDFFF010",
-    
-    # 4. Night Market
-    "NIGHT_FUT": "ECEUCNT0", "NIGHT_OPT": "ECEUCNT0",
-
-    # 5. Notice TRs (Execution)
-    "NOTICE_KR_STOCK_REAL": "H0STCNI0", "NOTICE_KR_FUT_REAL": "H0IFCNI0",
-    "NOTICE_KR_STOCK_DEMO": "H0STCNI9", "NOTICE_KR_FUT_DEMO": "H0IFCNI9",
-    "NOTICE_OS_REAL": "H0GSCNI0",     "NOTICE_OS_DEMO": "H0GSCNI9"
-}
-
+# =============================================================================
+# [상수 정의] 자산 타입 구분 (Refined)
+# =============================================================================
 class AssetType:
-    """자산 분류 상수"""
-    KR_STOCK = "KR_STOCK"       # 국내 주식 (SOR/NXT 포함)
+    KR_STOCK = "KR_STOCK"       # 국내 주식 (NXT, SOR, ISA 포함)
     KR_FUTOPT = "KR_FUTOPT"     # 국내 선물/옵션
     KR_BOND = "KR_BOND"         # 국내 장내채권
+    KR_INDEX = "KR_INDEX"       # 국내 업종/지수
+    
     OS_STOCK = "OS_STOCK"       # 해외 주식
     OS_FUTOPT = "OS_FUTOPT"     # 해외 선물/옵션
-    ISA = "ISA"                 # ISA (국내 주식)
-       
+    
+    NIGHT_FUT = "NIGHT_FUT"     # 야간 선물/옵션 (Eurex) - 별도 TR 구조 유지
 
+# =============================================================================
+# [통합 설정] KIS API 레지스트리
+# =============================================================================
+class KisConfig:
+    
+    ASIA_EXCHANGES = {
+        Exchange.HKFE, Exchange.TSE, Exchange.SSE, Exchange.SZSE, 
+        Exchange.HOSE, Exchange.OSE
+    }
+    
+    # vn.py Exchange -> KIS Code
+    VN_TO_KIS_EXCHANGE = {
+        Exchange.KRX: "", Exchange.NXT: "", Exchange.SOR: "",
+        Exchange.NASDAQ: "NASD", Exchange.NYSE: "NYSE", Exchange.AMEX: "AMEX",
+        Exchange.HKFE: "SEHK", Exchange.TSE: "TKSE", Exchange.SSE: "SHAA", Exchange.SZSE: "SZAA",
+        Exchange.HOSE: "VNSE", Exchange.OSE: "HASE",
+        Exchange.CME: "CME", Exchange.CBOT: "CBOT", Exchange.NYMEX: "NYMEX", Exchange.COMEX: "COMEX",
+        Exchange.EUREX: "EUREX", Exchange.SGX: "SGX", Exchange.ICE: "ICE", Exchange.LME: "LME"
+    }
+    
+    # 시세 조회용 (3자리 코드)
+    VN_TO_KIS_QUOTE_EXCHANGE = {
+        Exchange.NASDAQ: "NAS", Exchange.NYSE: "NYS", Exchange.AMEX: "AMS",
+        Exchange.HKFE: "HKS", Exchange.TSE: "TSE", Exchange.SSE: "SHS", Exchange.SZSE: "SZS",
+        Exchange.HOSE: "HSX", Exchange.OSE: "HNX"
+    }
+    
+    KIS_TO_VN_EXCHANGE = {v: k for k, v in VN_TO_KIS_EXCHANGE.items()}
+    KIS_TO_VN_EXCHANGE.update({v: k for k, v in VN_TO_KIS_QUOTE_EXCHANGE.items()})
+
+    STATUS_MAP = {
+        "01": Status.SUBMITTING, "02": Status.NOTTRADED, "03": Status.REJECTED,
+        "04": Status.NOTTRADED,  "05": Status.NOTTRADED, "11": Status.ALLTRADED,
+        "12": Status.NOTTRADED,  "13": Status.CANCELLED
+    }
+
+    # 에러 코드 분류
+    RETRYABLE_ERRORS = ["E00001", "OPS", "500", "502", "504", "TIME_OUT"]
+    FATAL_ERRORS = ["IGW00121", "IGW00201", "E10000", "E00002"]
+
+    # 주문 구분 코드 (국내주식 ORD_DVSN 등)
+    ORD_DVSN_LIMIT = "00"
+    ORD_DVSN_MARKET = "01"
+    ORD_DVSN_FAK = "10"
+    ORD_DVSN_FOK = "11"
+    # 선옵 주문유형
+    ORD_TP_LIMIT = "01"
+    ORD_TP_MARKET = "02"
+    SLL_BUY_SELL = "01"
+    SLL_BUY_BUY = "02"
+    # 취소 구분
+    RVSE_CNCL_DVSN = "02"
+    QTY_ALL_ORD_YN = "Y"
+
+    ASSET_REGISTRY = {
+        # [A] 국내 주식 — MCP: domestic_stock (inquire_balance, order_rvsecncl, inquire_daily_itemchartprice)
+        AssetType.KR_STOCK: {
+            "REAL": { 
+                # 기본 KRX TR
+                # "buy": "TTTC0012U", "sell": "TTTC0011U", 
+                "buy": "TTTC0802U", "sell": "TTTC0801U", "modify": "TTTC0013U", "cancel": "TTTC0013U", 
+                "daily": "FHKST03010100", "min": "FHKST03010200", 
+                "deposit": "CTRP6548R", "balance": "TTTC8434R", "nccs": "TTTC8001R", "ccnl": "TTTC8001R",
+                "search_info": "FHKST01010100",
+                "tick": "H0STCNT0", "hoka": "H0STASP0",
+                
+                # Nextrade 전용 TR
+                "tick_nxt": "H0NXCNT0", "hoka_nxt": "H0NXASP0",
+                
+                # SOR 전용 TR
+                "tick_sor": "H0UNCNT0", "hoka_sor": "H0UNASP0"
+            },
+            "DEMO": { 
+                "buy": "VTTC0012U", "sell": "VTTC0011U", "modify": "VTTC0013U", "cancel": "VTTC0013U", 
+                "daily": "FHKST03010100", "min": "FHKST03010200", 
+                "deposit": "VTTC8434R", "balance": "VTTC8434R", "nccs": "VTTC8001R", "ccnl": "VTTC8001R",
+                "search_info": "FHKST01010100",
+                "tick": "H0STCNT0", "hoka": "H0STASP0",
+                "tick_nxt": "H0NXCNT0", "hoka_nxt": "H0NXASP0",
+                "tick_sor": "H0UNCNT0", "hoka_sor": "H0UNASP0"
+            },
+            "URL": { 
+                "buy": "/uapi/domestic-stock/v1/trading/order-cash", 
+                "sell": "/uapi/domestic-stock/v1/trading/order-cash", 
+                "modify": "/uapi/domestic-stock/v1/trading/order-rvsecncl", 
+                "cancel": "/uapi/domestic-stock/v1/trading/order-rvsecncl", 
+                "daily": "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", 
+                "min": "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice", 
+                "deposit": "/uapi/domestic-stock/v1/trading/inquire-account-balance", 
+                "balance": "/uapi/domestic-stock/v1/trading/inquire-balance", 
+                "nccs": "/uapi/domestic-stock/v1/trading/inquire-daily-ccld", 
+                "ccnl": "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+                "search_info": "/uapi/domestic-stock/v1/quotations/inquire-price"
+            }
+        },
+        # [B] 국내 선물/옵션 — MCP: domestic_futureoption (order, order_rvsecncl, inquire_deposit, inquire_balance)
+        AssetType.KR_FUTOPT: {
+            "REAL": { 
+                "order": "TTTO1101U", "modify": "TTTO1103U", "cancel": "TTTO1103U", 
+                "daily": "FHKIF03020100", "min": "FHKIF03020200", 
+                "deposit": "CTRP6550R", "balance": "CTFO6118R", "nccs": "TTTO5301R", "ccnl": "TTTO5201R",
+                "search_info": "FHMIF10000000",
+                "tick": "H0IFCNT0", "hoka": "H0IFASP0", "tick_opt": "H0IOCNT0", "hoka_opt": "H0IOASP0"
+            },
+            "DEMO": { 
+                "order": "VTTO1101U", "modify": "VTTO1103U", "cancel": "VTTO1103U", 
+                "daily": "FHKIF03020100", "min": "FHKIF03020200", 
+                "deposit": "VTFO6118R", "balance": "VTFO6118R", "nccs": "VTTO5301R", "ccnl": "VTTO5201R",
+                "search_info": "FHMIF10000000",
+                "tick": "H0IFCNT0", "hoka": "H0IFASP0", "tick_opt": "H0IOCNT0", "hoka_opt": "H0IOASP0"
+            },
+            "URL": { 
+                "order": "/uapi/domestic-futureoption/v1/trading/order", 
+                "modify": "/uapi/domestic-futureoption/v1/trading/order-rvsecncl", 
+                "cancel": "/uapi/domestic-futureoption/v1/trading/order-rvsecncl", 
+                "daily": "/uapi/domestic-futureoption/v1/quotations/inquire-daily-fuopchartprice", 
+                "min": "/uapi/domestic-futureoption/v1/quotations/inquire-time-fuopchartprice", 
+                "deposit": "/uapi/domestic-futureoption/v1/trading/inquire-deposit", 
+                "balance": "/uapi/domestic-futureoption/v1/trading/inquire-balance", 
+                "nccs": "/uapi/domestic-futureoption/v1/trading/inquire-nccs", 
+                "ccnl": "/uapi/domestic-futureoption/v1/trading/inquire-ccnl",
+                "search_info": "/uapi/domestic-futureoption/v1/quotations/inquire-price"
+            }
+        },
+        # [C] 국내 장내채권 — MCP: domestic_bond (buy, sell, order_rvsecncl, inquire_balance, inquire_price)
+        AssetType.KR_BOND: {
+            "REAL": { 
+                "buy": "TTTC0952U", "sell": "TTTC0958U", "modify": "TTTC0953U", "cancel": "TTTC0953U", 
+                "daily": "FHKBJ773701C0", "min": "", 
+                "deposit": "CTSC8407R", "balance": "CTSC8407R", "nccs": "CTSC8035R", "ccnl": "CTSC8013R",
+                "search_info": "FHKBJ773400C0",
+                "tick": "H0BJCNT0", "hoka": "H0BJASP0"
+            },
+            "DEMO": { 
+                "buy": "", "sell": "", "modify": "", "cancel": "", 
+                "daily": "", "min": "", "deposit": "", "balance": "", "nccs": "", "ccnl": "",
+                "search_info": "", "tick": "", "hoka": ""
+            },
+            "URL": { 
+                "buy": "/uapi/domestic-bond/v1/trading/buy", 
+                "sell": "/uapi/domestic-bond/v1/trading/sell", 
+                "modify": "/uapi/domestic-bond/v1/trading/order-rvsecncl", 
+                "cancel": "/uapi/domestic-bond/v1/trading/order-rvsecncl", 
+                "daily": "/uapi/domestic-bond/v1/quotations/inquire-daily-itemchartprice", 
+                "deposit": "/uapi/domestic-bond/v1/trading/inquire-balance", 
+                "balance": "/uapi/domestic-bond/v1/trading/inquire-balance", 
+                "nccs": "/uapi/domestic-bond/v1/trading/inquire-psbl-rvsecncl", 
+                "ccnl": "/uapi/domestic-bond/v1/trading/inquire-daily-ccld",
+                "search_info": "/uapi/domestic-bond/v1/quotations/inquire-price"
+            }
+        },
+        # [D] 국내 업종/지수 — 실시간만 (tick)
+        AssetType.KR_INDEX: {
+            "REAL": { "tick": "H0UPCNT0", "hoka": "" },
+            "DEMO": { "tick": "H0UPCNT0", "hoka": "" }
+        },
+        # [E] 해외 주식 — MCP: overseas_stock (inquire_balance, order_rvsecncl, inquire_psamount)
+        AssetType.OS_STOCK: {
+            "REAL": { 
+                "US_buy": "TTTT1002U", "US_sell": "TTTT1006U", "US_modify": "TTTT1004U", "US_cancel": "TTTT1004U", 
+                "ASIA_buy": "TTTS1002U", "ASIA_sell": "TTTS1001U", "ASIA_modify": "TTTS1003U", "ASIA_cancel": "TTTS1003U", 
+                "daily": "HHDFS76240000", "min": "HHDFS76950200", 
+                "deposit": "TTTS3007R", "balance": "TTTS3012R", "nccs": "TTTS3018R", "ccnl": "TTTS3035R",
+                "search_info": "CTPF1702R",
+                "tick": "HDFSCNT0", "hoka": "HDFSASP0"
+            },
+            "DEMO": { 
+                "US_buy": "VTTT1002U", "US_sell": "VTTT1006U", "US_modify": "VTTT1004U", "US_cancel": "VTTT1004U", 
+                "ASIA_buy": "VTTS1002U", "ASIA_sell": "VTTS1001U", "ASIA_modify": "VTTS1003U", "ASIA_cancel": "VTTS1003U", 
+                "daily": "HHDFS76240000", "min": "HHDFS76950200", 
+                "deposit": "VTTS3007R", "balance": "VTTS3012R", "nccs": "", "ccnl": "VTTS3035R",
+                "search_info": "CTPF1702R",
+                "tick": "HDFSCNT0", "hoka": "HDFSASP0"
+            },
+            "URL": { 
+                "buy": "/uapi/overseas-stock/v1/trading/order", 
+                "sell": "/uapi/overseas-stock/v1/trading/order", 
+                "modify": "/uapi/overseas-stock/v1/trading/order-rvsecncl", 
+                "cancel": "/uapi/overseas-stock/v1/trading/order-rvsecncl", 
+                "daily": "/uapi/overseas-price/v1/quotations/dailyprice", 
+                "min": "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice", 
+                "deposit": "/uapi/overseas-stock/v1/trading/inquire-psamount", 
+                "balance": "/uapi/overseas-stock/v1/trading/inquire-balance", 
+                "nccs": "/uapi/overseas-stock/v1/trading/inquire-nccs", 
+                "ccnl": "/uapi/overseas-stock/v1/trading/inquire-ccnl",
+                "search_info": "/uapi/overseas-price/v1/quotations/search-info"
+            }
+        },
+        # [F] 해외 선물/옵션 — MCP: overseas_futureoption
+        AssetType.OS_FUTOPT: {
+            "REAL": { 
+                "order": "OTFM3001U", "modify": "OTFM3002U", "cancel": "OTFM3003U", 
+                "daily": "HHDFC55020100", "min": "HHDFC55020400", 
+                "deposit": "OTFM1411R", "balance": "OTFM1412R", "nccs": "OTFM3116R", "ccnl": "OTFM3122R",
+                "search_info": "HHDFC55010100", 
+                "search_info_opt": "HHDFO55010100",
+                "tick": "HDFFF020", "hoka": "HDFFF010"
+            },
+            "DEMO": { 
+                "order": "", "modify": "", "cancel": "", "daily": "", "min": "", 
+                "deposit": "", "balance": "", "nccs": "", "ccnl": "",
+                "search_info": "HHDFC55010100",
+                "search_info_opt": "HHDFO55010100",
+                "tick": "HDFFF020", "hoka": "HDFFF010"
+            },
+            "URL": { 
+                "order": "/uapi/overseas-futureoption/v1/trading/order", 
+                "modify": "/uapi/overseas-futureoption/v1/trading/order-rvsecncl", 
+                "cancel": "/uapi/overseas-futureoption/v1/trading/order-rvsecncl", 
+                "daily": "/uapi/overseas-futureoption/v1/quotations/daily-ccnl", 
+                "min": "/uapi/overseas-futureoption/v1/quotations/inquire-time-futurechartprice", 
+                "deposit": "/uapi/overseas-futureoption/v1/trading/inquire-deposit", 
+                "balance": "/uapi/overseas-futureoption/v1/trading/inquire-unpd", 
+                "nccs": "/uapi/overseas-futureoption/v1/trading/inquire-ccld", 
+                "ccnl": "/uapi/overseas-futureoption/v1/trading/inquire-daily-ccld",
+                "search_info": "/uapi/overseas-futureoption/v1/quotations/stock-detail",
+                "search_info_opt": "/uapi/overseas-futureoption/v1/quotations/opt-detail"
+            }
+        },
+        # [G] 야간 선물/옵션 (Eurex) — 실시간 tick/hoka 전용
+        AssetType.NIGHT_FUT: {
+            "REAL": { 
+                "tick": "H0MFCNT0", "hoka": "H0MFASP0", # 야간 선물
+                "tick_opt": "H0EUCNT0", "hoka_opt": "H0EUASP0" # 야간 옵션
+            },
+            "DEMO": { 
+                "tick": "H0MFCNT0", "hoka": "H0MFASP0",
+                "tick_opt": "H0EUCNT0", "hoka_opt": "H0EUASP0"
+            }
+        }
+    }
+
+# =============================================================================
+# [Helper Class] API 파라미터 빌더 및 유틸리티
+# =============================================================================
 class KisApiHelper:
     """
-    KIS API 설정 통합 관리자 (Gateway & Datafeed 공용)
-    Features:
-    - Multi-Asset Support (Stock, FutOpt, Bond, Overseas)
-    - Full Timeframe Support (1m, 1h, Daily, Weekly, Monthly)
-    - Balance & Deposit Query Support
-    - Automatic TR Selection based on Interval
+    Gateway에서 사용할 API 관련 정적 유틸리티 메서드 집합
     """
 
-    # ----------------------------------------------------------------
-    # [Error Handling]
-    # ----------------------------------------------------------------
-    # 재시도 가능한 에러 (TPS, Gateway Timeout, Server Error)
-    RETRYABLE_ERRORS = ["E00001", "OPS", "500", "502", "504"]
-    # 재시도 불가능한 에러 (권한 없음, 계좌 오류 등)
-    FATAL_ERRORS = ["IGW00121", "IGW00201", "E10000", "E00002"]
+    @staticmethod
+    def check_response(data: dict) -> Tuple[bool, str]:
+        if not data: return False, "Empty Response"
+        rt_cd = data.get("rt_cd", "")
+        msg1 = data.get("msg1", "")
+        msg_cd = data.get("msg_cd", "")
+        if rt_cd == "0": return True, msg1
+        else: return False, f"[{msg_cd}] {msg1}"
 
     @classmethod
     def check_retryable_error(cls, msg_cd: str) -> bool:
-        if not msg_cd: return False
-        for code in cls.FATAL_ERRORS:
-            if code in msg_cd: return False
-        for code in cls.RETRYABLE_ERRORS:
-            if code in msg_cd: return True
+        """재시도 가능한 에러 판별"""
+        if not msg_cd:
+            return False
+        for code in KisConfig.FATAL_ERRORS:
+            if code in msg_cd:
+                return False
+        for code in KisConfig.RETRYABLE_ERRORS:
+            if code in msg_cd:
+                return True
         return False
 
-    # ----------------------------------------------------------------
-    # 1. 거래소 및 자산 정의
-    # ----------------------------------------------------------------
-    DOMESTIC_EXCHANGES = [Exchange.KRX, Exchange.NXT, Exchange.SOR]
-    
-    OVERSEAS_STOCK_EXCHANGES = [
-        Exchange.NYSE, Exchange.NASDAQ, Exchange.AMEX, 
-        Exchange.SEHK, Exchange.TSE, Exchange.SSE, Exchange.SZSE, 
-        Exchange.HNX, Exchange.HSX
-    ]
-    
-    OVERSEAS_FUTOPT_EXCHANGES = [
-        Exchange.CME, Exchange.EUREX, Exchange.CBOT, 
-        Exchange.HKFE, Exchange.SGX, Exchange.ICE
-    ]
+    @staticmethod
+    def get_tr_id(asset_type: str, action: str, is_real: bool, exchange: Exchange = None) -> str:
+        env_key = "REAL" if is_real else "DEMO"
+        registry = KisConfig.ASSET_REGISTRY.get(asset_type, {}).get(env_key, {})
+        
+        # [New] 국내 주식 특수 거래소(NXT, SOR) 처리
+        if asset_type == AssetType.KR_STOCK and action in ["tick", "hoka"]:
+            if exchange == Exchange.NXT:
+                return registry.get(f"{action}_nxt", "")
+            elif exchange == Exchange.SOR:
+                return registry.get(f"{action}_sor", "")
+            # Default KRX fallthrough
+
+        # 해외주식 매매 TR 분기 (미국/아시아)
+        if asset_type == AssetType.OS_STOCK and exchange and action in ["buy", "sell", "modify", "cancel"]:
+            prefix = "ASIA_" if exchange in KisConfig.ASIA_EXCHANGES else "US_"
+            return registry.get(f"{prefix}{action}", "")
+        
+        # 선옵 통합 주문 TR
+        if asset_type in [AssetType.KR_FUTOPT, AssetType.OS_FUTOPT] and action in ["buy", "sell"]:
+            return registry.get("order", "")
+        
+        # 야간 선물/옵션 분기
+        if asset_type == AssetType.NIGHT_FUT and action in ["tick", "hoka"]:
+            # 기본적으로 선물을 반환하지만, 옵션인 경우 'tick_opt', 'hoka_opt'를 호출자가 요청해야 할 수도 있음.
+            # 여기서는 편의상 기본값 반환. Gateway에서 Product 타입 확인 필요 시 분기 로직 추가 가능.
+            return registry.get(action, "")
+
+        return registry.get(action, "")
 
     @staticmethod
-    def get_kis_exchange_code(asset_type: AssetType, exchange: Exchange, is_order: bool = False) -> str:
-        """vnpy Exchange -> KIS Code 변환"""
-        if asset_type == AssetType.OS_STOCK:
-            if not is_order:
-                # 시세/조회용 (3자리)
-                mapping = {
-                    Exchange.NYSE: "NYS", Exchange.NASDAQ: "NAS", Exchange.AMEX: "AMS",
-                    Exchange.SEHK: "HKS", Exchange.TSE: "TSE", Exchange.SSE: "SHS",
-                    Exchange.SZSE: "SZS", Exchange.HSX: "HSX", Exchange.HNX: "HNX"
-                }
-                return mapping.get(exchange, "NAS")
-            else:
-                # 주문용 (4자리)
-                mapping = {
-                    Exchange.NYSE: "NYSE", Exchange.NASDAQ: "NASD", Exchange.AMEX: "AMEX",
-                    Exchange.SEHK: "SEHK", Exchange.TSE: "TKSE", Exchange.SSE: "SHAA",
-                    Exchange.SZSE: "SZAA", Exchange.HSX: "VNSE", Exchange.HNX: "HASE"
-                }
-                return mapping.get(exchange, "NASD")
-        elif asset_type == AssetType.OS_FUTOPT:
-            # 해외선물은 거래소 코드가 그대로 쓰이는 경우가 많음 (CME, EUREX 등)
-            return exchange.value
+    def get_url_path(asset_type: str, action: str) -> str:
+        url_map = KisConfig.ASSET_REGISTRY.get(asset_type, {}).get("URL", {})
+        if "order" in url_map and action in ["buy", "sell"]:
+            return url_map["order"]
+        return url_map.get(action, "")
+
+    @staticmethod
+    def get_kis_exchange_code(asset_type: str, exchange: Exchange, is_order: bool = False) -> str:
+        if asset_type in [AssetType.KR_STOCK, AssetType.KR_FUTOPT, AssetType.KR_BOND]: return ""
+        if asset_type == AssetType.OS_STOCK and not is_order:
+            return KisConfig.VN_TO_KIS_QUOTE_EXCHANGE.get(exchange, "")
+        return KisConfig.VN_TO_KIS_EXCHANGE.get(exchange, "")
+
+    @staticmethod
+    def get_kis_nation_code(exchange: Exchange) -> str:
+        if exchange in {Exchange.NASDAQ, Exchange.NYSE, Exchange.AMEX}: return "512" # 미국
+        if exchange in {Exchange.HKFE}: return "501" # 홍콩
+        if exchange in {Exchange.SSE, Exchange.SZSE}: return "502" # 중국
+        if exchange in {Exchange.TSE, Exchange.OSE}: return "515" # 일본
+        if exchange in {Exchange.HOSE}: return "529" # 베트남
+        return "512" # 기본값
+
+    @staticmethod
+    def get_vnpy_exchange(kis_exch_code: str) -> Exchange:
+        return KisConfig.KIS_TO_VN_EXCHANGE.get(kis_exch_code, Exchange.LOCAL)
+
+    @staticmethod
+    def determine_asset_type(exchange: Exchange, symbol: str) -> str:
+        # [Refactored] NXT, SOR -> KR_STOCK 통합, EUREX -> NIGHT_FUT
+        if exchange in [Exchange.NXT, Exchange.SOR]: 
+            return AssetType.KR_STOCK
+        
+        if exchange == Exchange.EUREX: 
+            return AssetType.NIGHT_FUT
+        
+        if exchange == Exchange.KRX:
+            if len(symbol) == 12 and symbol.startswith("KR"): return AssetType.KR_BOND
+            if len(symbol) == 6 and symbol.isdigit(): return AssetType.KR_STOCK
+            return AssetType.KR_FUTOPT
+        elif exchange in [Exchange.NASDAQ, Exchange.NYSE, Exchange.AMEX, Exchange.HKFE, Exchange.TSE, Exchange.HOSE, Exchange.OSE, Exchange.SSE, Exchange.SZSE]:
+            return AssetType.OS_STOCK
+        elif exchange in [Exchange.CME, Exchange.CBOT, Exchange.NYMEX, Exchange.COMEX, Exchange.SGX, Exchange.ICE, Exchange.LME]:
+            return AssetType.OS_FUTOPT
         return ""
 
     @staticmethod
-    def get_vnpy_exchange_from_kis(asset_type: str, kis_code: str) -> Exchange:
-        """KIS Exchange Code -> vnpy Exchange (Response Parsing용)"""
-        kis_code = kis_code.upper().strip()
-        
-        if asset_type == AssetType.OS_STOCK:
-            mapping = {
-                "NAS": Exchange.NASDAQ, "NASD": Exchange.NASDAQ,
-                "NYS": Exchange.NYSE, "NYSE": Exchange.NYSE,
-                "AMS": Exchange.AMEX, "AMEX": Exchange.AMEX,
-                "HKS": Exchange.SEHK, "SEHK": Exchange.SEHK,
-                "TSE": Exchange.TSE, "JP": Exchange.TSE,
-                "SHS": Exchange.SHFE, "SZS": Exchange.SZSE,
-                "HSX": Exchange.HSX, "HNX": Exchange.HNX
-            }
-            return mapping.get(kis_code, Exchange.NASDAQ) # Default
-            
+    def get_contract_search_params(asset_type: str, symbol: str, exchange: Exchange, is_real: bool) -> Tuple[str, str, dict]:
+        tr_id = KisApiHelper.get_tr_id(asset_type, "search_info", is_real)
+        url = KisApiHelper.get_url_path(asset_type, "search_info")
+        params = {}
+
+        if asset_type == AssetType.KR_STOCK:
+            params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
+        elif asset_type == AssetType.KR_FUTOPT:
+            params = {"FID_COND_MRKT_DIV_CODE": "F", "FID_INPUT_ISCD": symbol}
+        elif asset_type == AssetType.KR_BOND:
+            params = {"FID_COND_MRKT_DIV_CODE": "B", "FID_INPUT_ISCD": symbol}
+        elif asset_type == AssetType.OS_STOCK:
+            nation_code = KisApiHelper.get_kis_nation_code(exchange)
+            params = {"PRDT_TYPE_CD": nation_code, "PDNO": symbol}
         elif asset_type == AssetType.OS_FUTOPT:
-            try:
-                return Exchange(kis_code)
-            except:
-                return Exchange.CME # Default fallback
-        
-        return Exchange.KRX
+            is_option = False
+            if " " in symbol or len(symbol) > 10: is_option = True
+            if is_option:
+                tr_id = KisApiHelper.get_tr_id(asset_type, "search_info_opt", is_real)
+                url = KisApiHelper.get_url_path(asset_type, "search_info_opt")
+            params = {"SRS_CD": symbol}
+            
+        return tr_id, url, params
 
     @staticmethod
-    def infer_kr_asset_product(symbol: str) -> Tuple[str, Product]:
-        """
-        국내 종목코드로 AssetType과 Product를 동시에 유추
-        Returns: (AssetType, Product)
-        """
-        # 1. 채권 (KR로 시작하는 12자리 표준코드)
-        if symbol.startswith("KR"):
-            return AssetType.KR_BOND, Product.BOND
-        
-        # 2. 주식/ETF/ETN (숫자 6자리 또는 Q/J로 시작하는 6자리)
-        if len(symbol) == 6:
-            # Q로 시작하면 ETN, 그 외 숫자는 주식/ETF
-            # vnpy Product에 ETF가 있다면 Product.ETF 반환 가능, 없으면 EQUITY
-            return AssetType.KR_STOCK, Product.EQUITY
-
-        # 3. 선물/옵션 (보통 단축코드 사용)
-        # 지수선물(1), 지수옵션(2,3), 주식선물(1), 주식옵션(2,3)
-        # KIS 단축코드는 보통 8자리 (예: 101T6000)
-        if len(symbol) >= 8 or (len(symbol) >= 3 and symbol[0] in ['1', '2', '3']):
-            head = symbol[0]
-            if head == '1': 
-                return AssetType.KR_FUTOPT, Product.FUTURES
-            elif head in ['2', '3']:
-                return AssetType.KR_FUTOPT, Product.OPTION
-        
-        # 기본값: 주식으로 간주
-        return AssetType.KR_STOCK, Product.EQUITY
-    
-    @classmethod
-    def get_asset_type(cls, exchange: Exchange, symbol: str = "") -> Optional[str]:
-        """자산 타입 판별"""
-        if exchange in cls.DOMESTIC_EXCHANGES or str(exchange) in ["KRX", "NXT", "SOR"]:
-            asset_type, _ = cls.infer_kr_asset_product(symbol)
-            return asset_type
-        if exchange in cls.OVERSEAS_STOCK_EXCHANGES: return AssetType.OS_STOCK
-        if exchange in cls.OVERSEAS_FUTOPT_EXCHANGES: return AssetType.OS_FUTOPT
-        return None
-
-    @staticmethod
-    def get_market_code(exchange: Exchange, asset_type: AssetType) -> str:
-        if asset_type == AssetType.KR_STOCK:
-            """시장 구분 코드 (주문/현재가용)"""
-            if exchange == Exchange.KRX: return "J"
-            if exchange == Exchange.NXT: return "NX"
-            if exchange == Exchange.SOR: return "UN"
-        elif asset_type == AssetType.KR_FUTOPT: return "F"
-        elif asset_type == AssetType.KR_BOND: return "B"
-        return "J"
-
-    # ----------------------------------------------------------------
-    # 2. TR 레지스트리 (자산별/기능별 URL 매핑)
-    # ----------------------------------------------------------------
-    TR_REGISTRY = {
-        # --- [A] 국내 주식 (KR_STOCK) ---
-        (AssetType.KR_STOCK, "HISTORY"): { # 분봉/시봉
-            "url": "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
-            "tr_id": "FHKST03010200", "pg_method": "TIME"
-        },
-        (AssetType.KR_STOCK, "HISTORY_PERIOD"): { # 일봉/주봉/월봉
-            "url": "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
-            "tr_id": "FHKST03010100", "pg_method": "DATE"
-        },
-        (AssetType.KR_STOCK, "QUOTE"): { "url": "/uapi/domestic-stock/v1/quotations/inquire-price", "tr_id": "FHKST01010100" },
-        (AssetType.KR_STOCK, "ORDER_BUY"): { "url": "/uapi/domestic-stock/v1/trading/order-cash", "tr_id": ("TTTC0802U", "VTTC0802U") },
-        (AssetType.KR_STOCK, "ORDER_SELL"): { "url": "/uapi/domestic-stock/v1/trading/order-cash", "tr_id": ("TTTC0801U", "VTTC0801U") },
-        (AssetType.KR_STOCK, "ORDER_MODIFY"): { "url": "/uapi/domestic-stock/v1/trading/order-rvsecncl", "tr_id": ("TTTC0803U", "VTTC0803U") },
-        (AssetType.KR_STOCK, "BALANCE"): { "url": "/uapi/domestic-stock/v1/trading/inquire-balance", "tr_id": ("TTTC8434R", "VTTC8434R") },
-        (AssetType.KR_STOCK, "DEPOSIT"): { "url": "/uapi/domestic-stock/v1/trading/inquire-psbl-order", "tr_id": ("TTTC8908R", "VTTC8908R") },
-
-        # --- [B] 해외 주식 (OS_STOCK) ---
-        (AssetType.OS_STOCK, "HISTORY"): { # 분봉/시봉
-            "url": "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice",
-            "tr_id": "HHDFS76950200", "pg_method": "KEY"
-        },
-        (AssetType.OS_STOCK, "HISTORY_PERIOD"): { # 일봉/주봉/월봉
-            "url": "/uapi/overseas-price/v1/quotations/dailyprice",
-            "tr_id": "HHDFS76240000", "pg_method": "KEY"
-        },
-        (AssetType.OS_STOCK, "QUOTE"): { "url": "/uapi/overseas-price/v1/quotations/price", "tr_id": "HHDFS00000300" },
-        (AssetType.OS_STOCK, "ORDER_BUY"): { "url": "/uapi/overseas-stock/v1/trading/order", "tr_id": ("TTTT1002U", "VTTT1002U") },
-        (AssetType.OS_STOCK, "ORDER_SELL"): { "url": "/uapi/overseas-stock/v1/trading/order", "tr_id": ("TTTT1006U", "VTTT1006U") },
-        (AssetType.OS_STOCK, "ORDER_MODIFY"): { "url": "/uapi/overseas-stock/v1/trading/order-rvsecncl", "tr_id": ("TTTT1004U", "VTTT1004U") },
-        (AssetType.OS_STOCK, "BALANCE"): { "url": "/uapi/overseas-stock/v1/trading/inquire-balance", "tr_id": ("TTTS3012R", "VTTS3012R") },
-        (AssetType.OS_STOCK, "DEPOSIT"): { "url": "/uapi/overseas-stock/v1/trading/inquire-present-balance", "tr_id": ("CTRP6504R", "VTRP6504R") },
-
-        # --- [C] 국내 선옵 (KR_FUTOPT) ---
-        (AssetType.KR_FUTOPT, "HISTORY"): { # 분봉 (시간별)
-            "url": "/uapi/domestic-futureoption/v1/quotations/inquire-time-fuopchartprice",
-            "tr_id": "FHKIF03020200", "pg_method": "TIME"
-        },
-        (AssetType.KR_FUTOPT, "HISTORY_PERIOD"): { # 일봉/주봉/월봉 (기간별)
-            "url": "/uapi/domestic-futureoption/v1/quotations/inquire-daily-futureoptionchartprice",
-            "tr_id": "FHKIF03020100", "pg_method": "DATE"
-        },
-        # (AssetType.KR_FUTOPT, "QUOTE"): { "url": "/uapi/domestic-futureoption/v1/quotations/inquire-price", "tr_id": "FHMIF10000000" },
-        (AssetType.KR_FUTOPT, "QUOTE"): { "url": "/uapi/domestic-futureoption/v1/quotations/inquire-price", "tr_id": "FHKIF02010200" },
-        (AssetType.KR_FUTOPT, "ORDER"): { "url": "/uapi/domestic-futureoption/v1/trading/order", "tr_id": ("TTTO1101U", "VTTO1101U") },
-        (AssetType.KR_FUTOPT, "ORDER_MODIFY"): { "url": "/uapi/domestic-futureoption/v1/trading/order-rvsecncl", "tr_id": ("TTTO1103U", "VTTO1103U") },
-        (AssetType.KR_FUTOPT, "BALANCE"): { "url": "/uapi/domestic-futureoption/v1/trading/inquire-balance", "tr_id": ("CTFO6118R", "VTFO6118R") },
-        (AssetType.KR_FUTOPT, "DEPOSIT"): { "url": "/uapi/domestic-futureoption/v1/trading/inquire-deposit", "tr_id": ("CTRP6550R", None) },
-
-        # --- [D] 해외 선옵 (OS_FUTOPT) ---
-        (AssetType.OS_FUTOPT, "HISTORY"): { # 분봉
-            "url": "/uapi/overseas-futureoption/v1/quotations/inquire-time-futurechartprice",
-            "tr_id": "HHDFC55020400", "pg_method": "KEY"
-        },
-        (AssetType.OS_FUTOPT, "HISTORY_PERIOD"): { # 일봉/주봉/월봉
-            "url": "/uapi/overseas-futureoption/v1/quotations/inquire-daily-futurechartprice",
-            "tr_id": "HHDFC55020300", "pg_method": "KEY"
-        },
-        # (AssetType.OS_FUTOPT, "QUOTE"): { "url": "/uapi/overseas-futureoption/v1/quotations/inquire-price", "tr_id": "HHDFC55010000" },
-        (AssetType.OS_FUTOPT, "QUOTE"): { "url": "/uapi/overseas-futureoption/v1/quotations/inquire-price", "tr_id": "HHDFS76200200" },
-        (AssetType.OS_FUTOPT, "ORDER"): { "url": "/uapi/overseas-futureoption/v1/trading/order", "tr_id": ("OTFM3001U", None) },
-        (AssetType.OS_FUTOPT, "ORDER_MODIFY"): { "url": "/uapi/overseas-futureoption/v1/trading/order-rvsecncl", "tr_id": ("OTFM3002U", None) },
-        (AssetType.OS_FUTOPT, "ORDER_CANCEL"): { "url": "/uapi/overseas-futureoption/v1/trading/order-rvsecncl", "tr_id": ("OTFM3003U", None) },
-        (AssetType.OS_FUTOPT, "BALANCE"): { "url": "/uapi/overseas-futureoption/v1/trading/inquire-unpd", "tr_id": ("OTFM1412R", None) },
-        (AssetType.OS_FUTOPT, "DEPOSIT"): { "url": "/uapi/overseas-futureoption/v1/trading/inquire-deposit", "tr_id": ("OTFM1411R", None) },
-
-        # --- [E] 채권 (KR_BOND) ---
-        (AssetType.KR_BOND, "HISTORY"): { # 채권은 기간별(일봉)만 지원
-            "url": "/uapi/domestic-bond/v1/quotations/inquire-daily-itemchartprice",
-            "tr_id": "FHKBJ773701C0", "pg_method": "NONE"
-        },
-        (AssetType.KR_BOND, "HISTORY_PERIOD"): { 
-            "url": "/uapi/domestic-bond/v1/quotations/inquire-daily-itemchartprice",
-            "tr_id": "FHKBJ773701C0", "pg_method": "NONE"
-        },
-        # (AssetType.KR_BOND, "QUOTE"): { "url": "/uapi/domestic-bond/v1/quotations/inquire-price", "tr_id": "FHKBJ773400C0" },
-        (AssetType.KR_BOND, "QUOTE"): { "url": "/uapi/domestic-bond/v1/quotations/inquire-price", "tr_id": "FHKBN02010100" },
-        (AssetType.KR_BOND, "ORDER_BUY"): { "url": "/uapi/domestic-bond/v1/trading/buy", "tr_id": ("TTTC0952U", None) },
-        (AssetType.KR_BOND, "ORDER_SELL"): { "url": "/uapi/domestic-bond/v1/trading/sell", "tr_id": ("TTTC0958U", None) },
-        (AssetType.KR_BOND, "ORDER_MODIFY"): { "url": "/uapi/domestic-bond/v1/trading/order-rvsecncl", "tr_id": ("TTTC0953U", None) },
-        (AssetType.KR_BOND, "BALANCE"): { "url": "/uapi/domestic-bond/v1/trading/inquire-balance", "tr_id": ("CTSC8407R", None) },
-    }
-
-    # -----------------------------------------------------------
-    # [Routing Configuration] 체결통보(Notice) 라우팅 맵
-    # Structure: { AssetType: { ServerType: [TR_ID_List] } }
-    # -----------------------------------------------------------
-    NOTICE_TR_MAP = {
-        AssetType.KR_STOCK: {
-            "REAL": ["H0STCNI0"],  # 국내주식 실전
-            "DEMO": ["H0STCNI9"]   # 국내주식 모의
-        },
-        AssetType.OS_STOCK: {
-            "REAL": ["H0GSCNI0"],  # 해외주식 실전
-            "DEMO": ["H0GSCNI9"]   # 해외주식 모의
-        },
-        AssetType.KR_FUTOPT: {
-            "REAL": ["H0IFCNI0"],  # 국내선물 실전
-            "DEMO": ["H0IFCNI9"]   # 국내선물 모의
-        },
-        AssetType.OS_FUTOPT: {
-            "REAL": ["HDFFF2C0", "HDFFF1C0"], # 해외선물 실전
-            "DEMO": [] 
-        },
-        AssetType.KR_BOND: {
-            "REAL": [], # 채권 체결통보 TR 확인 필요 (현재 공란)
-            "DEMO": []
-        }
-    }
-
-    # ----------------------------------------------------------------
-    # 3. 설정 조회 (Action & Interval 자동 분기)
-    # ----------------------------------------------------------------
-    @classmethod
-    def get_tr_config(cls, asset_type: AssetType, action: str, is_vts: bool = False, interval: Interval = None) -> Optional[dict]:
-        """
-        API 설정 반환
-        Action과 Interval을 기반으로 최적의 TR(분봉 vs 기간별) 자동 선택
-        """
-        target_action = action
-        
-        # HISTORY 요청인 경우 Interval에 따라 Action 분기
-        if action == "HISTORY" and interval:
-            # 1. 기간별(일/주/월) TR 사용
-            if interval in [Interval.DAILY, Interval.WEEKLY, Interval.MONTHLY]:
-                target_action = "HISTORY_PERIOD"
-            # 2. 타임라인(분/시) TR 사용 (기본값)
-            elif interval in [Interval.MINUTE, Interval.HOUR]:
-                target_action = "HISTORY"
-        
-        # 1차 조회
-        config = cls.TR_REGISTRY.get((asset_type, target_action))
-        
-        # Fallback (HISTORY <-> HISTORY_PERIOD)
-        if not config and target_action == "HISTORY_PERIOD":
-            config = cls.TR_REGISTRY.get((asset_type, "HISTORY"))
-        
-        # Order 통합 처리 (매수/매도/정정/취소)
-        if not config:
-            if action in ["ORDER_BUY", "ORDER_SELL"] and asset_type in [AssetType.KR_FUTOPT, AssetType.OS_FUTOPT]:
-                config = cls.TR_REGISTRY.get((asset_type, "ORDER"))
-            elif action == "ORDER_CANCEL" and asset_type != AssetType.OS_FUTOPT:
-                config = cls.TR_REGISTRY.get((asset_type, "ORDER_MODIFY"))
-        
-        if not config:
-            return None
-        
-        # 실전/모의 ID 선택 (Tuple 처리)
-        tr_val = config["tr_id"]
-        final_tr_id = tr_val[1] if (isinstance(tr_val, tuple) and is_vts) else (tr_val[0] if isinstance(tr_val, tuple) else tr_val)
-
-        if not final_tr_id:
-            return None 
-
-        result = config.copy()
-        result["tr_id"] = final_tr_id
-        return result
-
-    # ----------------------------------------------------------------
-    # 4. 파라미터 빌더 (전 자산 Interval 완벽 지원)
-    # ----------------------------------------------------------------
-    @classmethod
-    def build_history_params(cls, req: HistoryRequest, config: dict, end_dt: datetime, next_key: str = "") -> dict:
-        """
-        히스토리 파라미터 생성 (분봉/시봉/일봉/주봉/월봉 지원)
-        """
-        asset_type = cls.get_asset_type(req.exchange, req.symbol)
-        date_str = end_dt.strftime("%Y%m%d")
-        time_str = end_dt.strftime("%H%M%S")
-        
-        # 공통 기간 코드 매핑 (D:일, W:주, M:월)
-        period_code = "D"
-        if req.interval == Interval.WEEKLY: period_code = "W"
-        elif req.interval == Interval.MONTHLY: period_code = "M"
-        
-        # --- [A] 국내 주식 (KR_STOCK) ---
-        if asset_type == AssetType.KR_STOCK:
-            force_market_code = "J" # 히스토리는 항상 KRX(J) 기준
-            
-            # Case 1: 기간별 시세 (일/주/월)
-            if config["tr_id"] == "FHKST03010100":
-                return {
-                    "FID_COND_MRKT_DIV_CODE": force_market_code,
-                    "FID_INPUT_ISCD": req.symbol,
-                    "FID_INPUT_DATE_1": req.start.strftime("%Y%m%d"),
-                    "FID_INPUT_DATE_2": date_str,
-                    "FID_PERIOD_DIV_CODE": period_code,
-                    "FID_ORG_ADJ_PRC": "0" 
-                }
-            # Case 2: 분봉/시봉 시세
-            else:
-                return {
-                    "FID_ETC_CLS_CODE": "",
-                    "FID_COND_MRKT_DIV_CODE": force_market_code,
-                    "FID_INPUT_ISCD": req.symbol,
-                    "FID_INPUT_DATE_1": date_str,
-                    "FID_INPUT_HOUR_1": time_str,
-                    "FID_PW_DATA_INCU_YN": "Y"
-                }
-
-        # --- [B] 해외 주식 (OS_STOCK) ---
-        elif asset_type == AssetType.OS_STOCK:
-            excd = cls.get_kis_exchange_code(asset_type, req.exchange, is_order=False)
-            
-            # Case 1: 기간별 시세 (일/주/월)
-            if config["tr_id"] == "HHDFS76240000":
-                gubn = "0" # 일
-                if req.interval == Interval.WEEKLY: gubn = "1"
-                elif req.interval == Interval.MONTHLY: gubn = "2"
-                
-                return {
-                    "AUTH": "", "EXCD": excd, "SYMB": req.symbol,
-                    "GUBN": gubn, "BYMD": date_str, "MODP": "1", "KEYB": next_key
-                }
-            # Case 2: 분봉/시봉 시세
-            else:
-                nmin = "1"
-                if req.interval == Interval.HOUR: nmin = "60"
-                return {
-                    "AUTH": "", "EXCD": excd, "SYMB": req.symbol,
-                    "NMIN": nmin, "PINC": "1", "NEXT": "1" if next_key else "",
-                    "NREC": "120", "KEYB": next_key
-                }
-
-        # --- [C] 국내 선물옵션 (KR_FUTOPT) ---
-        elif asset_type == AssetType.KR_FUTOPT:
-            # Case 1: 기간별 시세 (일/주/월)
-            if config["tr_id"] == "FHKIF03020100":
-                return {
-                    "FID_COND_MRKT_DIV_CODE": "",
-                    "FID_INPUT_ISCD": req.symbol,
-                    "FID_INPUT_DATE_1": req.start.strftime("%Y%m%d"),
-                    "FID_INPUT_DATE_2": date_str,
-                    "FID_PERIOD_DIV_CODE": period_code # D/W/M
-                }
-            # Case 2: 분봉 시세
-            else:
-                return {
-                    "FID_COND_MRKT_DIV_CODE": "",
-                    "FID_INPUT_ISCD": req.symbol,
-                    "FID_INPUT_DATE_1": date_str,
-                    "FID_INPUT_HOUR_1": time_str,
-                    "FID_PW_DATA_INCU_YN": "Y"
-                }
-
-        # --- [D] 채권 (KR_BOND) ---
-        elif asset_type == AssetType.KR_BOND:
-            # 채권은 기간별(일봉)만 지원하므로 통합 처리
-            return {
-                "FID_COND_MRKT_DIV_CODE": "B",
-                "FID_INPUT_ISCD": req.symbol,
-                "FID_INPUT_DATE_1": req.start.strftime("%Y%m%d"),
-                "FID_INPUT_DATE_2": date_str,
-                "FID_PERIOD_DIV_CODE": period_code # D/W/M 지원
-            }
-            
-        # --- [E] 해외 선물옵션 (OS_FUTOPT) ---
-        elif asset_type == AssetType.OS_FUTOPT:
-            # Case 1: 기간별 시세 (일/주/월)
-            if config["tr_id"] == "HHDFC55020300":
-                gubn = "0"
-                if req.interval == Interval.WEEKLY: gubn = "1"
-                elif req.interval == Interval.MONTHLY: gubn = "2"
-                
-                return {
-                    "SRS_CD": req.symbol,
-                    "GUBN": gubn, # 0:일, 1:주, 2:월
-                    "QRY_TP": "P" if next_key else "Q", # 페이징
-                    "CNT": "100", # 조회 건수
-                    "INDEX_KEY": next_key
-                }
-            # Case 2: 분봉 시세
-            else:
-                return {
-                    "SRS_CD": req.symbol,
-                    "CNT": "120",
-                    "QRY_TP": "P" if next_key else "Q",
-                    "INDEX_KEY": next_key
-                }
-        return {}
-
-    # ----------------------------------------------------------------
-    # 5. 주문 및 기타 파라미터 빌더 (DEPOSIT 포함)
-    # ----------------------------------------------------------------
-    @classmethod
-    def build_order_params(cls, req: OrderRequest, asset_type: str, account_no: str) -> dict:
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:] if len(account_no) > 8 else "01"
-        qty = str(int(req.volume))
-        price = str(req.price) if req.price else "0"
-        ord_dvsn = "00" if req.type == OrderType.LIMIT else "01"
-
-        if asset_type == AssetType.KR_STOCK:
-            return {
-                "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd, "PDNO": req.symbol,
-                "ORD_DVSN": ord_dvsn, "ORD_QTY": qty, "ORD_UNPR": price
-            }
-        elif asset_type == AssetType.OS_STOCK:
-            ovrs_excg = cls.get_kis_exchange_code(asset_type, req.exchange, is_order=True)
-            return {
-                "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd, "OVRS_EXCG_CD": ovrs_excg,
-                "PDNO": req.symbol, "ORD_QTY": qty, "OVRS_ORD_UNPR": price,
-                "ORD_SVR_DVSN_CD": "0", "ORD_DVSN": ord_dvsn
-            }
-        elif asset_type == AssetType.KR_FUTOPT:
-            sll_buy = "02" if req.direction == Direction.LONG else "01"
-            return {
-                "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd, "PDNO": req.symbol,
-                "ORD_DVSN_CD": ord_dvsn, "SLL_BUY_DVSN_CD": sll_buy,
-                "ORD_QTY": qty, "ORD_UNPR": price
-            }
-        elif asset_type == AssetType.OS_FUTOPT:
-            sll_buy = "02" if req.direction == Direction.LONG else "01"
-            return {
-                "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd, "OVRS_FUTR_FX_PDNO": req.symbol,
-                "SLL_BUY_DVSN_CD": sll_buy, "FM_ORD_QTY": qty, "FM_ORD_PRIC": price,
-                "ORD_DVSN_CD": ord_dvsn, "FM_LQD_LMT_ORD_PRIC": "", "CCLD_CNDT_CD": "6"
-            }
-        elif asset_type == AssetType.KR_BOND:
-            return {
-                "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd, "PDNO": req.symbol,
-                "ORD_QTY2": qty, "BOND_ORD_UNPR": price,
-                "SAMT_MKET_PTCI_YN": "N", "BOND_RTL_MKET_YN": "N", "ORD_SVR_DVSN_CD": "0"
-            }
-        return {}
-
-    @classmethod
-    def build_cancel_params(cls, req: CancelRequest, asset_type: str, account_no: str) -> dict:
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:] if len(account_no) > 8 else "01"
-        params = {
-            "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
-            "ORGN_ODNO": str(req.orderid), "RVSE_CNCL_DVSN_CD": "02",
-            "ORD_QTY": "0", "ORD_UNPR": "0", "QTY_ALL_ORD_YN": "Y"
-        }
-        if asset_type == AssetType.OS_STOCK:
-            params["OVRS_EXCG_CD"] = cls.get_kis_exchange_code(asset_type, req.exchange, is_order=True)
-            params["PDNO"] = req.symbol
-            params["OVRS_ORD_UNPR"] = "0"
-            del params["ORD_UNPR"]
-        return params
-
-    @classmethod
-    def build_balance_params(cls, asset_type: str, account_no: str) -> dict:
-        """잔고 조회 파라미터 (DEPOSIT/BALANCE 공용)"""
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:] if len(account_no) > 8 else "01"
-        
-        # 기본 계좌 파라미터 (대부분의 조회 API가 이 포맷을 따름)
+    def build_query_params(asset_type: str, account_no: str, action: str = "balance") -> Dict[str, Any]:
+        cano, acnt_prdt_cd = account_no[:8], account_no[8:] if len(account_no)>8 else "01"
         params = {"CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd}
+        
+        if asset_type == AssetType.KR_STOCK:
+            params.update({"AFHR_FLPR_YN": "N", "OFL_YN": "N", "INQR_DVSN": "01", "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""})
+        elif asset_type == AssetType.OS_STOCK:
+            if action == "deposit":
+                 params.update({"OVRS_EXCG_CD": "NASD", "OVRS_ORD_UNPR": "0", "ITEM_CD": ""})
+            elif action == "balance":
+                params.update({"WCRC_FRCR_DVSN_CD": "02", "NATN_CD": "840", "TR_MKET_CD": "00", "INQR_DVSN_CD": "00"})
+        elif asset_type == AssetType.OS_FUTOPT:
+            params["CRCY_CD"] = "USD"
+        return params
+
+    @staticmethod
+    def build_order_params(req: OrderRequest, asset_type: str, account_no: str) -> Dict[str, Any]:
+        cano, acnt_prdt_cd = account_no[:8], account_no[8:] if len(account_no)>8 else "01"
+        qty_str = str(int(req.volume))
+        price_str = str(req.price)
+        if asset_type in [AssetType.KR_STOCK, AssetType.KR_BOND]: price_str = str(int(req.price))
+
+        params = {"CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd, "PDNO": req.symbol}
 
         if asset_type == AssetType.KR_STOCK:
-            # 주식 잔고 상세 조회 옵션
-            params.update({
-                "AFHR_FLPR_YN": "N", "OFL_YN": "N", "INQR_DVSN": "02", 
-                "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N", 
-                "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00", 
-                "CTX_AREA_FK": "", "CTX_AREA_NK": ""
-            })
-        elif asset_type == AssetType.OS_STOCK:
-            # 해외주식 통화/국가 옵션
-            params.update({
-                "WCRC_FRCR_DVSN_CD": "02", "NATN_CD": "840", 
-                "TR_MKET_CD": "00", "CTX_AREA_FK": "", "CTX_AREA_NK": ""
-            })
+            ord_dvsn = KisConfig.ORD_DVSN_LIMIT
+            if req.type == OrderType.MARKET:
+                ord_dvsn = KisConfig.ORD_DVSN_MARKET
+            elif req.type == OrderType.FAK:
+                ord_dvsn = KisConfig.ORD_DVSN_FAK
+            elif req.type == OrderType.FOK:
+                ord_dvsn = KisConfig.ORD_DVSN_FOK
+            params.update({"ORD_QTY": qty_str, "ORD_DVSN": ord_dvsn, "ORD_UNPR": price_str})
+            if req.type == OrderType.MARKET:
+                params["ORD_UNPR"] = "0"
+
         elif asset_type == AssetType.KR_FUTOPT:
-            params.update({"FUTR_OPT_GTFO_DVSN_CD": "1", "CTX_AREA_FK": "", "CTX_AREA_NK": ""})
-        elif asset_type == AssetType.OS_FUTOPT:
-            params.update({"CRCY_CD": "USD", "SORT_SQN": "DS", "CTX_AREA_FK": "", "CTX_AREA_NK": ""})
+            op_code = KisConfig.ORD_TP_LIMIT
+            if req.type == OrderType.MARKET:
+                op_code = KisConfig.ORD_TP_MARKET
+            sll_buy = KisConfig.SLL_BUY_SELL if req.direction == Direction.SHORT else KisConfig.SLL_BUY_BUY
+            params.update({"ORD_QTY": qty_str, "ORD_TP_CODE": op_code, "ORD_PRC": price_str, "SLL_BUY_DVSN_CD": sll_buy})
+
         elif asset_type == AssetType.KR_BOND:
-            params.update({"INQR_DVSN": "01", "CTX_AREA_FK": "", "CTX_AREA_NK": ""})
+            params["ORD_QTY2"] = qty_str
+            params["BOND_ORD_UNPR"] = price_str
+            params["SAMT_MKET_PTCI_YN"] = "N" 
+            params["BOND_RTL_MKET_YN"] = "N" 
+            params["ORD_SVR_DVSN_CD"] = "0"
+
+        elif asset_type == AssetType.OS_STOCK:
+            excg_cd = KisApiHelper.get_kis_exchange_code(asset_type, req.exchange, is_order=True)
+            params.update({"OVRS_EXCG_CD": excg_cd, "ORD_QTY": qty_str, "OVRS_ORD_UNPR": price_str, "ORD_SVR_DVSN_CD": "0"})
+            
+        elif asset_type == AssetType.OS_FUTOPT:
+            od_code = "00"
+            if req.type == OrderType.MARKET:
+                od_code = "01"
+            elif req.type == OrderType.STOP:
+                od_code = "03"
+            sll_buy = KisConfig.SLL_BUY_SELL if req.direction == Direction.SHORT else KisConfig.SLL_BUY_BUY
+            params.update({
+                "FM_ORD_QTY": qty_str, "FM_ORD_PRIC": price_str,
+                "SLL_BUY_DVSN_CD": sll_buy,
+                "ORD_DVSN_CD": od_code, "OVRS_FUTR_FX_PDNO": req.symbol
+            })
+            del params["PDNO"]
             
         return params
-    
-    @classmethod
-    def build_deposit_params(cls, asset_type: str, account_no: str) -> dict:
-        """예수금(주문가능금액) 조회 파라미터 (Builds on Balance params or customizes)"""
-        cano = account_no[:8]
-        acnt_prdt_cd = account_no[8:] if len(account_no) > 8 else "01"
+
+    @staticmethod
+    def build_cancel_params(req: CancelRequest, org_order_no: str, asset_type: str, account_no: str) -> Dict[str, Any]:
+        cano, acnt_prdt_cd = account_no[:8], account_no[8:] if len(account_no)>8 else "01"
+        qty_str = "0"
         
-        # 일부 예수금 TR은 잔고 TR과 파라미터가 다를 수 있음
+        params = {"CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd, "ORGN_ODNO": org_order_no, "RVSE_CNCL_DVSN_CD": KisConfig.RVSE_CNCL_DVSN}
+
         if asset_type == AssetType.KR_STOCK:
-            # 매수가능조회 (TTTC8908R) - PDNO, ORD_UNPR 등이 필요할 수 있으나 전체 조회시 공란 가능
-            return {
-                "CANO": cano, "ACNT_PRDT_CD": acnt_prdt_cd,
-                "PDNO": "", "ORD_UNPR": "0", "ORD_DVSN": "02", 
-                "CMA_EVLU_AMT_ICLD_YN": "Y", "OVRS_ICLD_YN": "Y"
-            }
+            params.update({"ORD_QTY": qty_str, "ORD_UNPR": "0", "QTY_ALL_ORD_YN": KisConfig.QTY_ALL_ORD_YN, "ORD_DVSN": KisConfig.ORD_DVSN_LIMIT})
+        elif asset_type == AssetType.KR_FUTOPT:
+            params.update({"ORD_DVSN_CD": KisConfig.ORD_TP_LIMIT, "RMN_QTY_YN": KisConfig.QTY_ALL_ORD_YN})
+        elif asset_type == AssetType.KR_BOND:
+            params.update({"ORD_QTY2": qty_str, "BOND_ORD_UNPR": "0", "QTY_ALL_ORD_YN": KisConfig.QTY_ALL_ORD_YN})
+        elif asset_type == AssetType.OS_STOCK:
+            excg_cd = KisApiHelper.get_kis_exchange_code(asset_type, req.exchange, is_order=True)
+            params.update({"OVRS_EXCG_CD": excg_cd, "PDNO": req.symbol, "ORD_QTY": qty_str, "OVRS_ORD_UNPR": "0"})
+        elif asset_type == AssetType.OS_FUTOPT:
+            params.update({"OVRS_FUTR_FX_PDNO": req.symbol, "FM_ORD_QTY": qty_str, "FM_ORD_PRIC": "0", "ORD_DVSN_CD": "00"})
+            
+        return params
+
+    @staticmethod
+    def build_history_params(req: HistoryRequest, asset_type: str, next_ctx: dict = None, interval_num: int = 1) -> Dict[str, Any]:
+        """
+        차트(과거 데이터) 조회용 파라미터 빌더
+        [Modified] interval_num: 분봉 조회 시 n분 데이터 요청 (기본 1)
+        """
+        params = {}
+        start_dt = req.start.strftime("%Y%m%d")
+        end_dt = req.end.strftime("%Y%m%d")
+        end_tm = req.end.strftime("%H%M%S")
         
-        # 나머지 자산은 Balance 파라미터와 유사하거나 공유
-        return cls.build_balance_params(asset_type, account_no)
-    
+        # Interval 체크
+        is_daily = req.interval == Interval.DAILY
+        is_weekly = req.interval == Interval.WEEKLY
+        is_monthly = req.interval == Interval.MONTHLY
+        is_period = is_daily or is_weekly or is_monthly
+        
+        # [A] 국내 주식
+        if asset_type == AssetType.KR_STOCK:
+            if is_period:
+                # ... (일/주/월봉 로직 동일) ...
+                period_code = "D"
+                if is_weekly: period_code = "W"
+                elif is_monthly: period_code = "M"
+
+                params = {
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": req.symbol,
+                    "FID_INPUT_DATE_1": start_dt,
+                    "FID_INPUT_DATE_2": end_dt,
+                    "FID_PERIOD_DIV_CODE": period_code,
+                    "FID_ORG_ADJ_PRC": "0"
+                }
+            else:
+                # [국내주식 분봉]
+                # 공식적으로 n분봉 파라미터가 없으나, 미래 확장을 위해 구조 유지
+                # TR: FHKST03010200 은 기본 1분봉
+                params = {
+                    "FID_ETC_CLS_CODE": "",
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": req.symbol,
+                    "FID_INPUT_HOUR_1": end_tm,
+                    "FID_PW_DATA_INCU_YN": "Y"
+                }
+
+        # [B] 국내 선물/옵션
+        elif asset_type == AssetType.KR_FUTOPT:
+            if is_period:
+                # ... (일/주/월봉 로직 동일) ...
+                period_code = "D"
+                if is_weekly: period_code = "W"
+                elif is_monthly: period_code = "M"
+                params = {
+                    "FID_COND_MRKT_DIV_CODE": "F",
+                    "FID_INPUT_ISCD": req.symbol,
+                    "FID_INPUT_DATE_1": start_dt,
+                    "FID_INPUT_DATE_2": end_dt,
+                    "FID_PERIOD_DIV_CODE": period_code
+                }
+            else:
+                params = {
+                    "FID_ETC_CLS_CODE": "",
+                    "FID_COND_MRKT_DIV_CODE": "F",
+                    "FID_INPUT_ISCD": req.symbol,
+                    "FID_INPUT_HOUR_1": end_tm,
+                    "FID_PW_DATA_INCU_YN": "Y"
+                }
+
+        # [C] 해외 주식
+        elif asset_type == AssetType.OS_STOCK:
+            excd = KisApiHelper.get_kis_exchange_code(asset_type, req.exchange, is_order=False)
+            if is_period:
+                # ... (일/주/월봉 로직 동일) ...
+                gubn = "0"
+                if is_weekly: gubn = "1"
+                elif is_monthly: gubn = "2"
+                
+                params = {
+                    "EXCD": excd,
+                    "SYMB": req.symbol,
+                    "GUBN": gubn,
+                    "BYMD": end_dt,
+                    "MODP": "1"
+                }
+            else:
+                # [해외주식 분봉] interval_num 적용 (30분봉 지원)
+                # Next/Keyb 로직 적용
+                next_val = next_ctx.get("NEXT", "") if next_ctx else ""
+                keyb_val = next_ctx.get("KEYB", "") if next_ctx else ""
+
+                params = {
+                    "EXCD": excd,
+                    "SYMB": req.symbol,
+                    "NMIN": str(interval_num), # [수정] 1 -> interval_num (예: 30)
+                    "PINC": "1",
+                    "NEXT": next_val,
+                    "KEYB": keyb_val
+                }
+
+        # [D] 해외 선물
+        elif asset_type == AssetType.OS_FUTOPT:
+             if is_period:
+                 # ... (일/주/월봉 로직 동일) ...
+                 gubn = "0"
+                 if is_weekly: gubn = "1"
+                 elif is_monthly: gubn = "2"
+                 params = {
+                     "SRS_CD": req.symbol,
+                     "START_DATE": start_dt,
+                     "END_DATE": end_dt,
+                     "GUBN": gubn 
+                 }
+             else:
+                 # [해외선물 분봉] TM_DV가 타임 interval
+                 params = {
+                     "SRS_CD": req.symbol,
+                     "CNT": "100",
+                     "TM_DV": str(interval_num) # [수정] 1 -> interval_num
+                 }
+        
+        # Pagination Context 병합 (국내주식용 ctx_area 등)
+        if next_ctx:
+            params.update(next_ctx)
+            
+        return params

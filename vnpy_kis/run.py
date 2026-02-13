@@ -1,12 +1,24 @@
 # flake8: noqa
+import os
+import sys
+import locale
+
+# 환경 변수 설정
+os.environ["LANG"] = "en_US.UTF-8"
+os.environ["LC_ALL"] = "en_US.UTF-8"
+repo_path = "/home/swahn/Dev/AutoTrade/vnpy_work/repo"
+if repo_path not in sys.path:
+    sys.path.insert(0, repo_path)
+
 from vnpy.event import EventEngine
 
 from vnpy.trader.engine import MainEngine
 from vnpy.trader.ui import MainWindow, create_qapp
 
 from vnpy_bybit import BybitGateway
-from vnpy_kis.kis_gateway import KisUnifiedGateway
+from vnpy_kis.kis_gateway import KisGateway
 from vnpy_ib import IbGateway
+from vnpy_binance import BinanceSpotGateway, BinanceLinearGateway, BinanceInverseGateway
 
 
 from vnpy_paperaccount import PaperAccountApp
@@ -30,12 +42,6 @@ from vnpy.trader.setting import SETTINGS
 from vnpy_krx.krx_datafeed import KrxDatafeed
 # from vnpy_kis.kis_datafeed import KisDatafeed
 
-import os
-import locale
-
-# 환경 변수 설정
-os.environ["LANG"] = "en_US.UTF-8"
-os.environ["LC_ALL"] = "en_US.UTF-8"
 
 # 로케일 강제 변경
 # locale.setlocale(locale.LC_ALL, "en_US.UTF-8")
@@ -52,12 +58,15 @@ def main():
     # SETTINGS["datafeed.name"] = "kis"
     
     event_engine = EventEngine()
-
     main_engine = MainEngine(event_engine)
 
     main_engine.add_gateway(BybitGateway)
-    main_engine.add_gateway(KisUnifiedGateway)
-    main_engine.add_gateway(IbGateway)
+    gateway: KisGateway = main_engine.add_gateway(KisGateway,"KIS")
+    gateway.set_main_engine(main_engine)
+    # main_engine.add_gateway(IbGateway)
+    main_engine.add_gateway(BinanceSpotGateway)
+    # main_engine.add_gateway(BinanceLinearGateway)
+    # main_engine.add_gateway(BinanceInverseGateway)
 
     # main_engine.add_app(PaperAccountApp)
     main_engine.add_app(CtaStrategyApp)
@@ -69,7 +78,7 @@ def main():
     main_engine.add_app(ScriptTraderApp)
     main_engine.add_app(ChartWizardApp)
     main_engine.add_app(RpcServiceApp)
-    main_engine.add_app(ExcelRtdApp)
+    # main_engine.add_app(ExcelRtdApp)
     main_engine.add_app(DataManagerApp)
     main_engine.add_app(DataRecorderApp)
     main_engine.add_app(RiskManagerApp)

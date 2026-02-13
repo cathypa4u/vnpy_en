@@ -1,0 +1,16 @@
+{
+    "mlp": {
+        "learning_rate": 0.001,
+        "hidden_layer_sizes": [64, 32],
+        "activation": "relu",
+        "solver": "adam"
+    },
+    "lgbm": {
+        "n_estimators": 200,
+        "learning_rate": 0.05,
+        "num_leaves": 31
+    },
+    "lasso": {
+        "alpha": 0.01
+    }
+}

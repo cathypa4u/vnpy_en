@@ -376,7 +376,7 @@ class AlphaLab:
                 ensure_ascii=False
             )
 
-    def load_contract_setttings(self) -> dict:
+    def load_contract_settings(self) -> dict:
         """Load contract settings"""
         contracts: dict = {}
 

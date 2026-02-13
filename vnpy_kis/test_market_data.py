@@ -12,9 +12,9 @@ from vnpy.trader.constant import Exchange, Interval
 from vnpy.trader.object import SubscribeRequest, HistoryRequest
 
 # 작성하신 게이트웨이 임포트 (파일 경로에 따라 수정 필요)
-# 예: vnpy_kis 폴더 안에 있다면 from vnpy_kis.kis_gateway import KisUnifiedGateway
+# 예: vnpy_kis 폴더 안에 있다면 from vnpy_kis.kis_gateway import KisGateway
 try:
-    from vnpy_kis.kis_gateway import KisUnifiedGateway
+    from vnpy_kis.kis_gateway import KisGateway
 except ImportError:
     print("❌ kis_gateway.py를 찾을 수 없습니다. 파일 경로를 확인해주세요.")
     sys.exit(1)
@@ -41,7 +41,7 @@ KIS_SETTING = {
 
 KIS_SETTING = {
     "User ID": "swahn4u",
-    "계좌 선택": "종합계좌"
+    "사용계정": "종합계좌"
 }
 # ----------------------------------------------------------------------
 # 2. 이벤트 핸들러 함수 정의
@@ -51,6 +51,7 @@ def process_tick_event(event: Event):
     tick = event.data
     print(f"\n[TICK] {tick.vt_symbol} | 시간: {tick.datetime.strftime('%H:%M:%S')}")
     print(f"   현재가: {tick.last_price} | 등락: {tick.last_price - tick.open_price if tick.open_price else 0}")
+    print(f"   고가: {tick.high_price} | 저가: {tick.low_price}")
     print(f"   매수1호가: {tick.bid_price_1} ({tick.bid_volume_1})")
     print(f"   매도1호가: {tick.ask_price_1} ({tick.ask_volume_1})")
 
@@ -65,7 +66,7 @@ def process_log_event(event: Event):
 def process_contract_event(event: Event):
     """계약 정보(종목 마스터) 수신 확인"""
     contract = event.data
-    print(f"[CONTRACT] 종목 정보 수신: {contract.vt_symbol} ({contract.name})")
+    #print(f"[CONTRACT] 종목 정보 수신: {contract.vt_symbol} ({contract.name}) [size:{contract.size}, pricetick:{contract.pricetick}]")
 
 # ----------------------------------------------------------------------
 # 3. 메인 실행 블록
@@ -82,7 +83,8 @@ def main():
     
     # 3) 게이트웨이 추가
     gateway_name = "KIS"
-    main_engine.add_gateway(KisUnifiedGateway, gateway_name)
+    gateway: KisGateway = main_engine.add_gateway(KisGateway, gateway_name)
+    gateway.set_main_engine(main_engine)
 
     print(">>> 게이트웨이 연결 시작...")
     
@@ -94,7 +96,7 @@ def main():
     # 연결 및 초기화 대기 (API 연결 속도 고려)
     time.sleep(5)
     
-    if False:
+    if True:
         print("\n>>> 실시간 시세 구독 요청...")
 
         # 5) 시세 구독 요청 (삼성전자 예시)
@@ -141,9 +143,9 @@ def main():
         req = HistoryRequest(
             symbol="005930",
             exchange=Exchange.KRX,
-            start=datetime.now(ZoneInfo("Asia/Seoul")) - timedelta(hours=4), # 이틀 전부터
+            start=datetime.now(ZoneInfo("Asia/Seoul")) - timedelta(weeks=4), # 이틀 전부터
             end=datetime.now(ZoneInfo("Asia/Seoul")),
-            interval=Interval.MINUTE
+            interval=Interval.DAILY
         )
         history_data = main_engine.query_history(req, gateway_name)
 
@@ -158,9 +160,9 @@ def main():
         os_req = HistoryRequest(
             symbol="NVDA",
             exchange=Exchange.NASDAQ,
-            start=datetime.now(ZoneInfo("Asia/Seoul")) - timedelta(hours=4), # 이틀 전부터
+            start=datetime.now(ZoneInfo("Asia/Seoul")) - timedelta(weeks=4), # 이틀 전부터
             end=datetime.now(ZoneInfo("Asia/Seoul")),
-            interval=Interval.MINUTE
+            interval=Interval.DAILY
         )        
         history_data = main_engine.query_history(os_req, gateway_name)
         

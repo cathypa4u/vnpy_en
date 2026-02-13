@@ -3,6 +3,8 @@ from datetime import date, datetime
 from copy import copy
 from typing import cast
 import traceback
+from functools import lru_cache, partial
+from collections.abc import Callable
 
 import numpy as np
 import polars as pl
@@ -13,6 +15,12 @@ from tqdm import tqdm
 from vnpy.trader.constant import Direction, Offset, Interval, Status
 from vnpy.trader.object import OrderData, TradeData, BarData
 from vnpy.trader.utility import round_to, extract_vt_symbol
+from vnpy.trader.optimize import (
+    OptimizationSetting,
+    check_optimization_setting,
+    run_bf_optimization,
+    run_ga_optimization
+)
 
 from ..logger import logger
 from ..lab import AlphaLab
@@ -89,7 +97,7 @@ class BacktestingEngine:
 
         self.cash = capital
 
-        contract_settings: dict = self.lab.load_contract_setttings()
+        contract_settings: dict = self.lab.load_contract_settings()
         for vt_symbol in vt_symbols:
             setting: dict | None = contract_settings.get(vt_symbol, None)
             if not setting:
@@ -795,6 +803,64 @@ class BacktestingEngine:
 
         return holding_value
 
+    def run_bf_optimization(
+        self,
+        optimization_setting: OptimizationSetting,
+        output: bool = True,
+        max_workers: int | None = None
+    ) -> list:
+        """Brute-force optimization"""
+        if not check_optimization_setting(optimization_setting):
+            return []
+
+        evaluate_func: Callable = wrap_evaluate(self, optimization_setting.target_name)
+        results: list = run_bf_optimization(
+            evaluate_func,
+            optimization_setting,
+            get_target_value,
+            max_workers=max_workers,
+            output=logger.info,
+        )
+
+        if output and results:
+            results.sort(key=lambda x: x[1], reverse=True)
+            for result in results:
+                msg: str = f"Parameters: {result[0]}, Target: {result[1]}"
+                logger.info(msg)
+
+        return results
+
+    run_optimization = run_bf_optimization
+
+    def run_ga_optimization(
+        self,
+        optimization_setting: OptimizationSetting,
+        max_workers: int | None = None,
+        ngen: int = 30,
+        output: bool = True
+    ) -> list:
+        """Genetic algorithm optimization"""
+        if not check_optimization_setting(optimization_setting):
+            return []
+
+        evaluate_func: Callable = wrap_evaluate(self, optimization_setting.target_name)
+        results: list = run_ga_optimization(
+            evaluate_func,
+            optimization_setting,
+            get_target_value,
+            max_workers=max_workers,
+            ngen=ngen,
+            output=logger.info
+        )
+
+        if output and results:
+            results.sort(key=lambda x: x[1], reverse=True)
+            for result in results:
+                msg: str = f"Parameters: {result[0]}, Target: {result[1]}"
+                logger.info(msg)
+
+        return results
+
 
 class ContractDailyResult:
     """Contract daily profit and loss result"""
@@ -942,3 +1008,65 @@ class PortfolioDailyResult:
                 contract_result.update_close_price(close_price)
             else:
                 self.contract_results[vt_symbol] = ContractDailyResult(self.date, close_price)
+
+
+def evaluate(
+    target_name: str,
+    strategy_class: type[AlphaStrategy],
+    vt_symbols: list[str],
+    interval: Interval,
+    start: datetime,
+    end: datetime,
+    capital: int,
+    risk_free: float,
+    annual_days: int,
+    lab: AlphaLab,
+    signal_df: pl.DataFrame,
+    setting: dict
+) -> tuple:
+    """Wrapper function for running backtesting in a process pool."""
+    engine: BacktestingEngine = BacktestingEngine(lab)
+
+    engine.set_parameters(
+        vt_symbols=vt_symbols,
+        interval=interval,
+        start=start,
+        end=end,
+        capital=capital,
+        risk_free=risk_free,
+        annual_days=annual_days
+    )
+
+    engine.add_strategy(strategy_class, setting, signal_df)
+    engine.load_data()
+    engine.run_backtesting()
+    engine.calculate_result()
+    statistics: dict = engine.calculate_statistics()
+
+    target_value: float = statistics[target_name]
+    return (str(setting), target_value, statistics)
+
+
+def wrap_evaluate(engine: BacktestingEngine, target_name: str) -> Callable:
+    """Wrapper function for backtesting configuration for use in a process pool."""
+    func: Callable = partial(
+        evaluate,
+        target_name,
+        engine.strategy_class,
+        engine.vt_symbols,
+        engine.interval,
+        engine.start,
+        engine.end,
+        engine.capital,
+        engine.risk_free,
+        engine.annual_days,
+        engine.lab,
+        engine.signal_df
+    )
+    return func
+
+
+def get_target_value(result: list) -> float:
+    """Get optimization target"""
+    target_value: float = result[1]
+    return target_value

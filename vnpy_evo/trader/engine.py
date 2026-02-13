@@ -12,10 +12,9 @@ from vnpy.trader.engine import (
     OmsEngine,
     EmailEngine,
     Event,
-    EVENT_LOG,
-    Path,
-    get_folder_path
+    EVENT_LOG
 )
+from vnpy.trader.utility import Path, get_folder_path
 
 from .object import LogData
 from .setting import SETTINGS

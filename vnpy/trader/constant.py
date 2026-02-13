@@ -31,12 +31,12 @@ class Status(Enum):
     """
     Order status.
     """
-    SUBMITTING = _("Submitting")
-    NOTTRADED = _("Not Traded")
-    PARTTRADED = _("Part Traded")
-    ALLTRADED = _("All Traded")
-    CANCELLED = _("Cancelled")
-    REJECTED = _("Rejected")
+    SUBMITTING = _("SUBMITTING")
+    NOTTRADED = _("NOTTRADED")
+    PARTTRADED = _("PARTTRADED")
+    ALLTRADED = _("ALLTRADED")
+    CANCELLED = _("CANCELLED")
+    REJECTED = _("REJECTED")
 
 
 class Product(Enum):
@@ -75,8 +75,8 @@ class OptionType(Enum):
     """
     Option type.
     """
-    CALL = _("Call")
-    PUT = _("Put")
+    CALL = _("CALL")
+    PUT = _("PUT")
 
 
 class Exchange(Enum):
@@ -139,8 +139,8 @@ class Exchange(Enum):
     KOSDAQ = "KOSDAQ"   # 한국(KOSDAQ)
     NXT = "NXT"         # 넥스트레이드
     SOR = "SOR"         # 통합 (KRX + NXT)
-    HSX = "HSX",           # 베트남 호치민
-    HNX = "HNX"            # 베트남 하노이   
+    HOSE = "HOSE"       # 베트남 호치민
+    OSE = "OSE"         # 베트남 하노이   
     
     # Crypto
     BINANCE = "BINANCE"
@@ -161,6 +161,7 @@ class Currency(Enum):
     HKD = "HKD"
     CNY = "CNY"
     CAD = "CAD"
+    KRW = "KRW"
 
 
 class Interval(Enum):

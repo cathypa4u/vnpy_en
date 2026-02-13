@@ -55,6 +55,28 @@ class AlphaDataset:
         self.infer_processors: list = []
         self.learn_processors: list = []
 
+    def set_segments(
+        self,
+        train_period: tuple[str, str],
+        valid_period: tuple[str, str],
+        test_period: tuple[str, str]
+    ) -> None:
+        """
+        Set data periods for all segments
+        """
+        self.data_periods[Segment.TRAIN] = train_period
+        self.data_periods[Segment.VALID] = valid_period
+        self.data_periods[Segment.TEST] = test_period
+        
+    def get_data_period(
+        self,
+        segment: Segment,
+    ) -> tuple[str, str]:
+        """
+        Get data period for a specific segment
+        """
+        return self.data_periods[segment]
+
     def add_feature(
         self,
         name: str,
@@ -247,19 +269,19 @@ class AlphaDataset:
         # feature_s = feature_s.unstack(level=1).reindex(full_idx).ffill().stack()
         # # ---------------------------------------------------------------------
         
-        # -----------------------------------------------------------------------------
-        # [핵심 수정] KOSPI 휴장일 오류 해결 로직
-        # 1. 전체 기간에 대한 '매일(Daily)' 날짜 인덱스 생성
-        full_idx = pd.date_range(start=price_df.index.min(), end=price_df.index.max(), freq='D')
+        # # -----------------------------------------------------------------------------
+        # # [핵심 수정] KOSPI 휴장일 오류 해결 로직
+        # # 1. 전체 기간에 대한 '매일(Daily)' 날짜 인덱스 생성
+        # full_idx = pd.date_range(start=price_df.index.min(), end=price_df.index.max(), freq='D')
         
-        # 2. 주가 데이터: 빈 날짜를 전일 종가로 채움 (ffill) -> 수익률 계산 필수
-        price_df = price_df.reindex(full_idx).ffill()
+        # # 2. 주가 데이터: 빈 날짜를 전일 종가로 채움 (ffill) -> 수익률 계산 필수
+        # price_df = price_df.reindex(full_idx).ffill()
         
-        # 3. 팩터 데이터: 빈 날짜를 생성하되 값을 비워둠 (NaN)
-        #    - unstack(): 종목별로 펼침
-        #    - reindex(): 날짜를 꽉 채움 (값은 NaN)
-        #    - stack(dropna=False): 다시 세로로 쌓음. ★중요: dropna=False로 해야 날짜 틀이 유지됨
-        feature_s = feature_s.unstack(level=1).reindex(full_idx).stack(dropna=False)
+        # # 3. 팩터 데이터: 빈 날짜를 생성하되 값을 비워둠 (NaN)
+        # #    - unstack(): 종목별로 펼침
+        # #    - reindex(): 날짜를 꽉 채움 (값은 NaN)
+        # #    - stack(dropna=False): 다시 세로로 쌓음. ★중요: dropna=False로 해야 날짜 틀이 유지됨
+        # feature_s = feature_s.unstack(level=1).reindex(full_idx).stack(dropna=False)
         # -----------------------------------------------------------------------------
                         
         # Merge data
@@ -288,6 +310,21 @@ class AlphaDataset:
         # Extract price
         price_df: pd.DataFrame = df.select(["datetime", "vt_symbol", "close"]).to_pandas()
         price_df = price_df.pivot(index="datetime", columns="vt_symbol", values="close")
+
+        # -----------------------------------------------------------------------------
+        # # [핵심 수정] KOSPI 휴장일 오류 해결 로직
+        # # 1. 전체 기간에 대한 '매일(Daily)' 날짜 인덱스 생성
+        # full_idx = pd.date_range(start=price_df.index.min(), end=price_df.index.max(), freq='D')
+        
+        # # 2. 주가 데이터: 빈 날짜를 전일 종가로 채움 (ffill) -> 수익률 계산 필수
+        # price_df = price_df.reindex(full_idx).ffill()
+        
+        # # 3. 팩터 데이터: 빈 날짜를 생성하되 값을 비워둠 (NaN)
+        # #    - unstack(): 종목별로 펼침
+        # #    - reindex(): 날짜를 꽉 채움 (값은 NaN)
+        # #    - stack(dropna=False): 다시 세로로 쌓음. ★중요: dropna=False로 해야 날짜 틀이 유지됨
+        # signal_s = signal_s.unstack(level=1).reindex(full_idx).stack(dropna=False)
+        # -----------------------------------------------------------------------------
 
         # Merge data
         clean_data: pd.DataFrame = get_clean_factor_and_forward_returns(

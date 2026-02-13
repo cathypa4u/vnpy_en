@@ -30,6 +30,20 @@ def process_fill_na(df: pl.DataFrame, fill_value: float, fill_label: bool = True
         )
     return df
 
+def process_inf_to_zero(df: pl.DataFrame, names: list[str] | None = None) -> pl.DataFrame:
+    """데이터프레임 내의 무한대(Inf) 값을 0으로 치환"""
+    # 컬럼명이 지정되지 않았다면 datetime, vt_symbol을 제외한 모든 수치 컬럼 대상
+    if names is None:
+        names = [col for col in df.columns if col not in ["datetime", "vt_symbol"]]
+
+    # 각 컬럼에 대해 무한대 확인 및 치환
+    return df.with_columns([
+        pl.when(pl.col(name).is_infinite())
+        .then(0.0)
+        .otherwise(pl.col(name))
+        .alias(name)
+        for name in names
+    ])
 
 def process_cs_norm(
     df: pl.DataFrame,

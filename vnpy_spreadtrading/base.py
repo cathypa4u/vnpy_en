@@ -163,7 +163,7 @@ class SpreadData:
 
         self.price_formula: str = ""
         self.trading_formula: str = ""
-
+       
         for leg in legs:
             self.legs[leg.vt_symbol] = leg
             if leg.vt_symbol == active_symbol:
@@ -181,6 +181,9 @@ class SpreadData:
                 self.pricetick = leg.pricetick
             else:
                 self.pricetick = min(self.pricetick, leg.pricetick)
+
+        self.write_log(f"Spred:{self.name}, active leg:{self.active_leg.vt_symbol}")
+
 
         # Spread data
         self.bid_price: float = 0
